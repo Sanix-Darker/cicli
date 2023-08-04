@@ -1,4 +1,4 @@
-module github.com/sanix-darker/ci_cli
+module github.com/sanix-darker/cicli
 
 go 1.20
 
