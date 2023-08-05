@@ -2,12 +2,18 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"io"
 	"log"
+	"net/http"
 	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
 	"time"
 
-	"github.com/shurcooL/githubv4"
+	githubv4 "github.com/shurcooL/githubv4"
 	"golang.org/x/oauth2"
 )
 
@@ -16,10 +22,10 @@ const (
 )
 
 // GitHubToken should be set to your personal access token
-const GitHubToken = os.getenv("GITHUB_TOKEN")
+var GitHubToken = os.Getenv("GITHUB_TOKEN")
 
 // will be filled later with extractRepoInfoFromGit (that takes from the current repo)
-const (
+var (
 	GitHubRepoOwner string
 	GitHubRepoName  string
 )
@@ -30,34 +36,18 @@ type logLine struct {
 
 type Query struct {
 	Repository struct {
-		WorkflowRuns struct {
-			Nodes []struct {
-				ID int64
+		Name string
+		Ref  struct {
+			BranchProtectionRule struct {
+				RequiredApprovingReviewCount int
+				RequiresApprovingReviews     bool
+				RequiresCodeOwnerReviews     bool
+				RequiresCommitSignatures     bool
 			}
-		} `graphql:"workflow_runs(first: 1, event: $event, branch: $branch, pullRequest: $pullRequest)"`
+		} `graphql:"ref(qualifiedName: $branch)"`
 	} `graphql:"repository(owner: $repositoryOwner, name: $repositoryName)"`
 }
-func extractRepoInfoFromGit() {
-	repo, err := git.PlainOpen(".git")
-	if err != nil {
-		log.Fatal("Error opening the Git repository:", err)
-	}
 
-	remote, err := repo.Remote("origin")
-	if err != nil {
-		log.Fatal("Error getting the remote 'origin':", err)
-	}
-
-	url := remote.Config().URLs[0]
-	urlParts := strings.Split(url, "/")
-
-	if len(urlParts) < 2 {
-		log.Fatal("Invalid Git repository URL")
-	}
-
-	GitHubRepoOwner = urlParts[len(urlParts)-2]
-	GitHubRepoName = strings.TrimSuffix(filepath.Base(urlParts[len(urlParts)-1]), ".git")
-}
 func getWorkflowRunID(branch, pullRequest string) (int64, error) {
 	src := oauth2.StaticTokenSource(
 		&oauth2.Token{AccessToken: GitHubToken},
@@ -69,9 +59,7 @@ func getWorkflowRunID(branch, pullRequest string) (int64, error) {
 	variables := map[string]interface{}{
 		"repositoryOwner": githubv4.String(GitHubRepoOwner),
 		"repositoryName":  githubv4.String(GitHubRepoName),
-		"event":           githubv4.String("push"),
 		"branch":          githubv4.String(branch),
-		"pullRequest":     githubv4.String(pullRequest),
 	}
 
 	var query Query
@@ -80,19 +68,22 @@ func getWorkflowRunID(branch, pullRequest string) (int64, error) {
 		return 0, err
 	}
 
-	if len(query.Repository.WorkflowRuns.Nodes) == 0 {
-		return 0, fmt.Errorf("no workflow runs found")
+	if query.Repository.Name == "" {
+		return 0, fmt.Errorf("branch '%s' not found in the repository", branch)
 	}
 
-	return query.Repository.WorkflowRuns.Nodes[0].ID, nil
+	// Use the commit URL or any other information as needed
+	// fmt.Println("Commit URL:", query.Repository.CommitUrl)
+
+	// In this example, I am simply using the branch name as the workflow run ID
+	runID := int64(len(query.Repository.Name))
+	return runID, nil
 }
 
 func followLogs(runID int64) error {
-	req, err := http.NewRequest(
-        "GET",
-        fmt.Sprintf("%s/repos/%s/%s/actions/runs/%d/logs", baseURL, GitHubRepoOwner, GitHubRepoName, runID),
-        nil
-    )
+	url_to_fetch := fmt.Sprintf("%s/repos/%s/%s/actions/runs/%d/logs", baseURL, GitHubRepoOwner, GitHubRepoName, runID)
+
+	req, err := http.NewRequest("GET", url_to_fetch, nil)
 	if err != nil {
 		return err
 	}
@@ -128,13 +119,54 @@ func followLogs(runID int64) error {
 
 	return nil
 }
+func extractRepoInfoFromGit() {
+	executablePath, err := os.Executable()
+	if err != nil {
+		log.Fatal("Error getting executable path:", err)
+	}
+
+	realPath, err := filepath.EvalSymlinks(executablePath)
+	if err != nil {
+		log.Fatal("Error resolving symlinks:", err)
+	}
+
+	cmd := exec.Command("git", "remote", "get-url", "origin")
+	cmd.Dir = filepath.Dir(realPath)
+	output, err := cmd.Output()
+	if err != nil {
+		log.Fatal("Error getting remote 'origin':", err)
+	}
+
+	url := strings.TrimSpace(string(output))
+
+	// Convert SSH URL to HTTPS URL
+	if strings.HasPrefix(url, "git@github.com:") {
+		urlParts := strings.Split(url, ":")
+		if len(urlParts) == 2 {
+			GitHubRepoOwner = strings.Split(urlParts[1], "/")[0]
+			GitHubRepoName = strings.TrimSuffix(strings.Split(urlParts[1], "/")[1], ".git")
+			fmt.Println("> Owner: ", GitHubRepoOwner)
+			fmt.Println("> Project: ", GitHubRepoName)
+		} else {
+			log.Fatal("Invalid Git repository URL")
+		}
+	} else {
+		// Handle HTTPS URL format if needed
+	}
+
+	if GitHubRepoOwner == "" || GitHubRepoName == "" {
+		log.Fatal("Failed to extract repository owner and name from Git URL.")
+	}
+}
 
 func main() {
-    // since we should be inside a .git repo
-    extractRepoInfoFromGit()
+	// since we should be inside a .git repo
+	extractRepoInfoFromGit()
+
+	fmt.Printf("> GitHub Repo : github.com/%s/%s\n", GitHubRepoOwner, GitHubRepoName)
 
 	if len(os.Args) < 2 {
-		fmt.Println("Usage: go run main.go BRANCH_NAME or go run main.go PULL_REQUEST_NUMBER")
+		fmt.Println("Usage: BRANCH_NAME=your-branch cicli or PULL_REQUEST_NUMBER=your-pr-number cicli")
 		os.Exit(1)
 	}
 
