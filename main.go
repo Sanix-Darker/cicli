@@ -35,7 +35,6 @@ type logLine struct {
 }
 
 type Query struct {
-	Tree       struct{ CommitUrl string }
 	Repository struct {
 		Name string
 		Ref  struct {
@@ -69,16 +68,12 @@ func getWorkflowRunID(branch, pullRequest string) (int64, error) {
 		return 0, err
 	}
 
-	fmt.Printf(">>>><< %+v\n", query)
 	if query.Repository.Name == "" {
 		return 0, fmt.Errorf("branch '%s' not found in the repository", branch)
 	}
 
 	// Use the commit URL or any other information as needed
-	fmt.Println("Commit URL:", query.Tree.CommitUrl)
-
-	// You can add more conditions here based on the branch protection rule, pull request status, etc.
-	// For example, you can check for pull request and extract more information using query.Repository.Ref.PullRequest
+	// fmt.Println("Commit URL:", query.Repository.CommitUrl)
 
 	// In this example, I am simply using the branch name as the workflow run ID
 	runID := int64(len(query.Repository.Name))
@@ -86,7 +81,9 @@ func getWorkflowRunID(branch, pullRequest string) (int64, error) {
 }
 
 func followLogs(runID int64) error {
-	req, err := http.NewRequest("GET", fmt.Sprintf("%s/repos/%s/%s/actions/runs/%d/logs", baseURL, GitHubRepoOwner, GitHubRepoName, runID), nil)
+	url_to_fetch := fmt.Sprintf("%s/repos/%s/%s/actions/runs/%d/logs", baseURL, GitHubRepoOwner, GitHubRepoName, runID)
+
+	req, err := http.NewRequest("GET", url_to_fetch, nil)
 	if err != nil {
 		return err
 	}
